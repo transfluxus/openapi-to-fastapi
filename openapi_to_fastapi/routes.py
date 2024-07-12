@@ -123,6 +123,7 @@ class SpecRouter:
                     raw_spec, path, cleanup=cleanup, format_code=self._format_code
                 )
                 post = path_item.post
+                get = path_item.get
                 if post:
                     req_model = getattr(models, post.requestBodyModel, EmptyBody)
                     route_info = RouteInfo(
@@ -152,6 +153,36 @@ class SpecRouter:
                             route_info.responses[status_code] = additional_response
 
                     self._routes.post_map[path] = route_info
+
+                if get:
+                    # req_model = getattr(models, get.requestBodyModel, EmptyBody)
+                    route_info = RouteInfo(
+                        request_model=None,
+                        description=get.description,
+                        tags=get.tags,
+                        summary=get.summary,
+                        headers=get.headers,
+                        deprecated=get.deprecated,
+                        responses={},
+                    )
+
+                    for status_code, parsed_response in get.parsedResponses.items():
+                        resp_model = getattr(models, parsed_response.name)
+                        description = parsed_response.description
+                        if status_code == 200:
+                            route_info.response_model = resp_model
+                        else:
+                            # An entry for an additional response for FastAPI routes
+                            # https://fastapi.tiangolo.com/advanced/additional-responses/#additional-response-with-model
+                            additional_response = {}
+                            if parsed_response.description:
+                                additional_response["description"] = description
+                            if parsed_response.name:
+                                additional_response["model"] = resp_model
+
+                            route_info.responses[status_code] = additional_response
+
+                    self._routes.get_map[path] = route_info
 
     def get_route_info(self, path: str, method: str) -> Optional[RouteInfo]:
         """
@@ -212,6 +243,7 @@ class SpecRouter:
                 self._routes.default_post = route_info
             else:
                 route_info = self._routes.post_map[path]
+            # add for getter
 
             route_info.handler = fn
             route_info.name = name
@@ -236,8 +268,35 @@ class SpecRouter:
         """
         router = APIRouter()
 
-        # POST methods
-        for path, route_info in self._routes.post_map.items():
+        def add_get_route(path, route_info):
+            resp_model = self.get_response_model(path, "get")
+            # if route is not customized, fall back to default POST
+            if route_info.handler == dummy_route:
+                route_info.merge_with(self._routes.default_post)
+
+            route_name = route_info.name
+            if route_info.name_factory:
+                route_name = route_info.name_factory(path)
+
+            handler = copy_function(route_info.handler)
+            # add_annotation_to_first_argument(handler, None)  # noqa type: ignore
+
+            router.get(
+                path,
+                name=route_name,
+                summary=route_info.summary or route_name,
+                description=route_info.description,
+                response_description=route_info.response_description,
+                response_model=resp_model,
+                responses=route_info.responses,
+                tags=route_info.tags,
+                deprecated=route_info.deprecated,
+                dependencies=route_info.dependencies,
+            )(handler)
+
+            handled_paths.add(path)
+
+        def add_post_route(path, route_info):
             resp_model = self.get_response_model(path, "post")
             req_model = route_info.request_model
 
@@ -264,4 +323,22 @@ class SpecRouter:
                 deprecated=route_info.deprecated,
                 dependencies=route_info.dependencies,
             )(handler)
+
+            handled_paths.add(path)
+
+        handled_paths = set()
+
+        # GET methods
+        for path, route_info in self._routes.get_map.items():
+            print("get", path)
+            add_get_route(path, route_info)
+            if self._routes.post_map.get(path):
+                add_post_route(path, self._routes.post_map[path])
+
+        # POST methods
+        for path, route_info in self._routes.post_map.items():
+            if path in handled_paths:
+                continue
+            add_post_route(path, route_info)
+
         return router
