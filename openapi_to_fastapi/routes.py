@@ -8,15 +8,22 @@ from fastapi import APIRouter, params
 from fastapi.openapi import models as oas
 
 from .model_generator import load_models
+from .models import METHODS, BODY_METHODS
 from .parser import parse_openapi_spec
 from .utils import add_annotation_to_first_argument, copy_function
 from .validator.core import BaseValidator, DefaultValidator
 
 
+def dummy_empty_route():
+    """
+    Default handler to use if nothing was provided by user
+    :return: Empty JSON response
+    """
+    return {}
+
 def dummy_route(request):
     """
     Default handler to use if nothing was provided by user
-    :param request: Incoming request
     :return: Empty JSON response
     """
     return {}
@@ -41,7 +48,7 @@ class RouteInfo:
     response_model: Optional[Type[pydantic.BaseModel]] = None
     responses: Optional[Dict[int, Dict[str, Any]]] = None
     headers: Dict[str, oas.Header] = field(default_factory=dict)
-    handler: Callable = dummy_route
+    handler: Callable = None
 
     def merge_with(self, another_route: "RouteInfo"):
         for v in vars(self).keys():
@@ -66,13 +73,6 @@ class RouteInfo:
         }
 
 
-@dataclass
-class RoutesMapping:
-    default_get: RouteInfo = field(default_factory=RouteInfo)
-    default_post: RouteInfo = field(default_factory=RouteInfo)
-    get_map: Optional[Dict[str, RouteInfo]] = None
-    post_map: Optional[Dict[str, RouteInfo]] = None
-
 
 class SpecRouter:
     def __init__(
@@ -83,25 +83,15 @@ class SpecRouter:
         cleanup: bool = True,
     ):
         self._validators = [DefaultValidator] + (validators or [])  # type: ignore
-        self._routes = RoutesMapping(post_map={}, get_map={})
+        self.default_route = RouteInfo()
+        self._routes: Dict[str, Dict[str, RouteInfo]] = {
+            method: {} for method in METHODS
+        }
         self._format_code = format_code
 
         self.specs_path = Path(specs_path)
         self._validate_and_parse_specs(cleanup)
 
-    @property
-    def get_map(self) -> Optional[Dict[str, RouteInfo]]:
-        """
-        Get a mapping of parsed paths to route info for GET routes.
-        """
-        return self._routes.get_map
-
-    @property
-    def post_map(self) -> Optional[Dict[str, RouteInfo]]:
-        """
-        Get a mapping of parsed paths to route info for POST routes.
-        """
-        return self._routes.post_map
 
     def _validate_and_parse_specs(self, cleanup=True):
         """
@@ -122,67 +112,39 @@ class SpecRouter:
                 models = load_models(
                     raw_spec, path, cleanup=cleanup, format_code=self._format_code
                 )
-                post = path_item.post
-                get = path_item.get
-                if post:
-                    req_model = getattr(models, post.requestBodyModel, EmptyBody)
-                    route_info = RouteInfo(
-                        request_model=req_model,
-                        description=post.description,
-                        tags=post.tags,
-                        summary=post.summary,
-                        headers=post.headers,
-                        deprecated=post.deprecated,
-                        responses={},
-                    )
+                for method in METHODS:
+                    path_method = getattr(path_item, method)
 
-                    for status_code, parsed_response in post.parsedResponses.items():
-                        resp_model = getattr(models, parsed_response.name)
-                        description = parsed_response.description
-                        if status_code == 200:
-                            route_info.response_model = resp_model
-                        else:
-                            # An entry for an additional response for FastAPI routes
-                            # https://fastapi.tiangolo.com/advanced/additional-responses/#additional-response-with-model
-                            additional_response = {}
-                            if parsed_response.description:
-                                additional_response["description"] = description
-                            if parsed_response.name:
-                                additional_response["model"] = resp_model
+                    if path_method:
+                        req_model = getattr(models, path_method.requestBodyModel, EmptyBody if method in BODY_METHODS else None)
+                        # print(path, method, req_model)
+                        route_info = RouteInfo(
+                            request_model=req_model,
+                            description=path_method.description,
+                            tags=path_method.tags,
+                            summary=path_method.summary,
+                            headers=path_method.headers,
+                            deprecated=path_method.deprecated,
+                            responses={},
+                        )
 
-                            route_info.responses[status_code] = additional_response
+                        for status_code, parsed_response in path_method.parsedResponses.items():
+                            resp_model = getattr(models, parsed_response.name)
+                            description = parsed_response.description
+                            if status_code == 200:
+                                route_info.response_model = resp_model
+                            else:
+                                # An entry for an additional response for FastAPI routes
+                                # https://fastapi.tiangolo.com/advanced/additional-responses/#additional-response-with-model
+                                additional_response = {}
+                                if parsed_response.description:
+                                    additional_response["description"] = description
+                                if parsed_response.name:
+                                    additional_response["model"] = resp_model
 
-                    self._routes.post_map[path] = route_info
+                                route_info.responses[status_code] = additional_response
 
-                if get:
-                    # req_model = getattr(models, get.requestBodyModel, EmptyBody)
-                    route_info = RouteInfo(
-                        request_model=None,
-                        description=get.description,
-                        tags=get.tags,
-                        summary=get.summary,
-                        headers=get.headers,
-                        deprecated=get.deprecated,
-                        responses={},
-                    )
-
-                    for status_code, parsed_response in get.parsedResponses.items():
-                        resp_model = getattr(models, parsed_response.name)
-                        description = parsed_response.description
-                        if status_code == 200:
-                            route_info.response_model = resp_model
-                        else:
-                            # An entry for an additional response for FastAPI routes
-                            # https://fastapi.tiangolo.com/advanced/additional-responses/#additional-response-with-model
-                            additional_response = {}
-                            if parsed_response.description:
-                                additional_response["description"] = description
-                            if parsed_response.name:
-                                additional_response["model"] = resp_model
-
-                            route_info.responses[status_code] = additional_response
-
-                    self._routes.get_map[path] = route_info
+                        self._routes[method][path] = route_info
 
     def get_route_info(self, path: str, method: str) -> Optional[RouteInfo]:
         """
@@ -191,7 +153,7 @@ class SpecRouter:
         :param method: HTTP Method, e.g "post" or "GET"
         :return: The corresponding RouteInfo.
         """
-        store = getattr(self._routes, f"{method.lower()}_map", None)
+        store = self._routes.get(method.lower(), None)
         if store is None:
             raise ValueError("Unsupported HTTP method")
         route_info: Optional[RouteInfo] = store.get(path)
@@ -242,7 +204,7 @@ class SpecRouter:
                 route_info = RouteInfo()
                 self._routes.default_post = route_info
             else:
-                route_info = self._routes.post_map[path]
+                route_info = self._routes[POST_METHOD][path]
             # add for getter
 
             route_info.handler = fn
@@ -268,77 +230,38 @@ class SpecRouter:
         """
         router = APIRouter()
 
-        def add_get_route(path, route_info):
-            resp_model = self.get_response_model(path, "get")
-            # if route is not customized, fall back to default POST
-            if route_info.handler == dummy_route:
-                route_info.merge_with(self._routes.default_post)
+        for method in METHODS:
+            for path, route_info in self._routes[method].items():
+                resp_model = self.get_response_model(path, method)
+                req_model = route_info.request_model
+                # if route is not customized, fall back to default POST
+                if method in BODY_METHODS:
+                    route_info.handler = dummy_route
+                else:
+                    route_info.handler = dummy_empty_route
 
-            route_name = route_info.name
-            if route_info.name_factory:
-                route_name = route_info.name_factory(path)
+                    if route_info.handler == dummy_route:
+                        route_info.merge_with(self.default_route)
 
-            handler = copy_function(route_info.handler)
-            # add_annotation_to_first_argument(handler, None)  # noqa type: ignore
+                route_name = route_info.name
+                if route_info.name_factory:
+                    route_name = route_info.name_factory(path)
 
-            router.get(
-                path,
-                name=route_name,
-                summary=route_info.summary or route_name,
-                description=route_info.description,
-                response_description=route_info.response_description,
-                response_model=resp_model,
-                responses=route_info.responses,
-                tags=route_info.tags,
-                deprecated=route_info.deprecated,
-                dependencies=route_info.dependencies,
-            )(handler)
-
-            handled_paths.add(path)
-
-        def add_post_route(path, route_info):
-            resp_model = self.get_response_model(path, "post")
-            req_model = route_info.request_model
-
-            # if route is not customized, fall back to default POST
-            if route_info.handler == dummy_route:
-                route_info.merge_with(self._routes.default_post)
-
-            route_name = route_info.name
-            if route_info.name_factory:
-                route_name = route_info.name_factory(path)
-
-            handler = copy_function(route_info.handler)
-            add_annotation_to_first_argument(handler, req_model)  # noqa type: ignore
-
-            router.post(
-                path,
-                name=route_name,
-                summary=route_info.summary or route_name,
-                description=route_info.description,
-                response_description=route_info.response_description,
-                response_model=resp_model,
-                responses=route_info.responses,
-                tags=route_info.tags,
-                deprecated=route_info.deprecated,
-                dependencies=route_info.dependencies,
-            )(handler)
-
-            handled_paths.add(path)
-
-        handled_paths = set()
-
-        # GET methods
-        for path, route_info in self._routes.get_map.items():
-            print("get", path)
-            add_get_route(path, route_info)
-            if self._routes.post_map.get(path):
-                add_post_route(path, self._routes.post_map[path])
-
-        # POST methods
-        for path, route_info in self._routes.post_map.items():
-            if path in handled_paths:
-                continue
-            add_post_route(path, route_info)
+                handler = copy_function(route_info.handler)
+                if req_model:
+                    add_annotation_to_first_argument(handler, req_model)  # noqa type: ignore
+                print(method, path, handler)
+                getattr(router, method)(
+                    path,
+                    name=route_name,
+                    summary=route_info.summary or route_name,
+                    description=route_info.description,
+                    response_description=route_info.response_description,
+                    response_model=resp_model,
+                    responses=route_info.responses,
+                    tags=route_info.tags,
+                    deprecated=route_info.deprecated,
+                    dependencies=route_info.dependencies,
+                )(handler)
 
         return router

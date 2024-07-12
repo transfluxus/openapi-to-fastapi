@@ -2,8 +2,9 @@ from typing import Dict, List, Optional
 
 from fastapi.openapi import models as oas
 
-from .models import Header, Operation, ParsedResponse, PathItem
+from .models import Header, Operation, ParsedResponse, PathItem, METHODS
 from .validator import MissingParameter
+
 
 
 def parse_parameters(spec: dict) -> List[oas.Parameter]:
@@ -107,13 +108,10 @@ def parse_openapi_spec(spec: dict) -> Dict[str, PathItem]:
     for path, data in spec.get("paths", {}).items():
         path_item = PathItem(description=data.get("description"))
 
-        post_operation = parse_operation(data, "post")
-        if post_operation:
-            path_item.post = post_operation
-
-        get_operation = parse_operation(data, "get")
-        if get_operation:
-            path_item.get = get_operation
+        for method in METHODS:
+            operation = parse_operation(data, method)
+            if operation:
+                setattr(path_item, method, operation)
 
         path_items[path] = path_item
 
