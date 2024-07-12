@@ -92,7 +92,6 @@ class SpecRouter:
         self.specs_path = Path(specs_path)
         self._validate_and_parse_specs(cleanup)
 
-
     def _validate_and_parse_specs(self, cleanup=True):
         """
         Validate OpenAPI specs and parse required information from them

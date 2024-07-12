@@ -11,7 +11,7 @@ models defined the specs.
 
 > ⚠️ This fork brings in the other methods. probably through refactoring the routes module in order to 
 > reduce repetitions.
-> EXPERIMENTALLY DONE
+> EXPERIMENTALLY DONE.... You can use this as a starting point. I won't pursue this further
 
 > ⚠️ This library was created to cover only our own needs first. So for now it's not
 > suitable for everyone and has a lot of technical restrictions. Please consider it as
