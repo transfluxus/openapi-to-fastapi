@@ -9,6 +9,9 @@ One day we faced that problem — we had to create an API from multiple OpenAPI 
 make sure that the incoming requests and the outgoing responses were aligned with the
 models defined the specs.
 
+> ⚠️ This fork brings in the other methods. probably through refactoring the routes module in order to 
+> reduce repetitions
+
 > ⚠️ This library was created to cover only our own needs first. So for now it's not
 > suitable for everyone and has a lot of technical restrictions. Please consider it as
 > experimental stuff
